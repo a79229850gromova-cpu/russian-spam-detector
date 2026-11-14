@@ -4,6 +4,7 @@ import streamlit as st
 import joblib
 import numpy as np
 
+
 # ============================================================
 # НАСТРОЙКИ СТРАНИЦЫ
 # ============================================================
@@ -14,7 +15,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# Небольшой кастомный CSS для аккуратного вида
 st.markdown(
     """
     <style>
@@ -33,7 +33,7 @@ st.markdown(
 
 
 # ============================================================
-# ЗАГРУЗКА МОДЕЛИ (с кэшированием для быстрой работы)
+# ЗАГРУЗКА МОДЕЛИ
 # ============================================================
 
 @st.cache_resource
@@ -42,8 +42,8 @@ def load_assets():
     vec = joblib.load("tfidf_vectorizer.joblib")
     return mod, vec
 
-
 model, vectorizer = load_assets()
+
 
 # ============================================================
 # ШАПКА САЙТА
@@ -55,15 +55,14 @@ st.caption(
     "на признаки дезинформации, вбросов и спама."
 )
 
-# Разделяем интерфейс на вкладки
 tab_check, tab_info = st.tabs(["🔍 Проверка текста", "📊 О модели и метриках"])
+
 
 # ============================================================
 # ВКЛАДКА 1: ПРОВЕРКА СООБЩЕНИЯ
 # ============================================================
 
 with tab_check:
-    # Инициализируем состояние для кнопок быстрых примеров
     if "input_text" not in st.session_state:
         st.session_state.input_text = ""
 
@@ -92,7 +91,6 @@ with tab_check:
                 "Не забудь взять документы."
             )
 
-    # Поле ввода текста
     message = st.text_area(
         "Текст сообщения для анализа:",
         value=st.session_state.input_text,
@@ -108,51 +106,51 @@ with tab_check:
             st.session_state.input_text = ""
             st.rerun()
 
-    # Логика проверки
+    # Логика проверки с пониженным порогом (25%)
     if check_button:
         if not message.strip():
             st.warning("⚠️ Сначала введите текст или выберите один из примеров выше.")
         else:
             message_vector = vectorizer.transform([message])
-            prediction = model.predict(message_vector)[0]
             probabilities = model.predict_proba(message_vector)[0]
+            threat_prob = probabilities[1]  # Вероятность фейка/спама
 
             st.markdown("### Результат анализа")
 
-            # Красивая карточка с рамкой
             with st.container(border=True):
-                if prediction == 1:
-                    confidence = probabilities[1]
+                if threat_prob >= 0.25:
                     st.error("🚨 **Обнаружены признаки ФЕЙКА или СПАМА**")
 
                     c1, c2 = st.columns(2)
-                    c1.metric("Вероятность угрозы", f"{confidence * 100:.1f}%")
+                    c1.metric("Вероятность угрозы", f"{threat_prob * 100:.1f}%")
                     c2.metric("Статус", "Не рекомендуется доверять")
-                    st.progress(float(confidence))
+                    st.progress(float(threat_prob))
 
-                    # Показываем слова, которые сильнее всего повлияли на решение модели
                     feature_names = np.array(vectorizer.get_feature_names_out())
                     coefs = model.coef_[0]
                     msg_indices = message_vector.nonzero()[1]
 
                     if len(msg_indices) > 0:
                         word_scores = [(feature_names[i], coefs[i] * message_vector[0, i]) for i in msg_indices]
-                        # Берем топ-5 слов с положительным весом (в сторону фейка/спама)
-                        suspicious_words = [w for w, s in sorted(word_scores, key=lambda x: x[1], reverse=True) if
-                                            s > 0][:5]
+                        suspicious_words = [
+                            w for w, s in sorted(word_scores, key=lambda x: x[1], reverse=True) if s > 0
+                        ][:5]
 
                         if suspicious_words:
-                            st.caption("🔎 **Ключевые слова-триггеры, на которые отреагировала модель:** " + ", ".join(
-                                f"`{w}`" for w in suspicious_words))
+                            st.caption(
+                                "🔎 **Ключевые слова-триггеры:** "
+                                + ", ".join(f"`{w}`" for w in suspicious_words)
+                            )
 
                 else:
-                    confidence = probabilities[0]
+                    safe_prob = probabilities[0]
                     st.success("✅ **Сообщение выглядит ДОСТОВЕРНЫМ (не фейк и не спам)**")
 
                     c1, c2 = st.columns(2)
-                    c1.metric("Уверенность модели", f"{confidence * 100:.1f}%")
+                    c1.metric("Уверенность модели", f"{safe_prob * 100:.1f}%")
                     c2.metric("Статус", "Безопасно")
-                    st.progress(float(confidence))
+                    st.progress(float(safe_prob))
+
 
 # ============================================================
 # ВКЛАДКА 2: О МОДЕЛИ
@@ -163,16 +161,16 @@ with tab_info:
 
     with st.container(border=True):
         m1, m2, m3 = st.columns(3)
-        m1.metric("Accuracy", "98,83%")
-        m2.metric("Recall (фейк/спам)", "96%")
-        m3.metric("F1-score", "97%")
+        m1.metric("Обучающая выборка", "37 510")
+        m2.metric("Порог детекции", "25%")
+        m3.metric("Словарь TF-IDF", "60 000")
 
     st.markdown(
         """
         **Технические характеристики:**
         * **Алгоритм классификации:** Логистическая регрессия (`LogisticRegression` с балансировкой классов `class_weight="balanced"`).
-        * **Векторизация текста:** TF-IDF (учитывает отдельные слова и устойчивые словосочетания — биграммы, словарь до 60 000 признаков).
-        * **Обучающая выборка:** 116 680 русскоязычных сообщений (объединённый корпус спам-рассылок и верифицированных фейков из соцсетей и Telegram-каналов).
+        * **Векторизация текста:** TF-IDF (отдельные слова и устойчивые словосочетания — биграммы).
+        * **Состав выборки:** Сбалансированный корпус из 37 510 русскоязычных сообщений (обычные переписки, спам-рассылки и верифицированные фейки из Telegram-каналов и соцсетей).
         * **Разделение выборки:** 80% обучение / 20% тестирование.
         """
     )
